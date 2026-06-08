@@ -21,13 +21,14 @@ DELETE_PATTERN = re.compile(r"удалить\s+(\d{2}-\d{2}-\d{2})", re.IGNORECA
 
 # Ожидание подтверждения удаления: {user_id: filename}
 pending_delete = {}
+# Ожидание даты для загрузки фото: {user_id: file_bytes}
+pending_upload = {}
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
 async def list_files_in_folder(client: httpx.AsyncClient) -> list:
-    """Возвращает список файлов в папке на Яндекс Диске."""
     headers = {"Authorization": f"OAuth {YADISK_TOKEN}"}
     resp = await client.get(
         "https://cloud-api.yandex.net/v1/disk/resources",
@@ -40,7 +41,6 @@ async def list_files_in_folder(client: httpx.AsyncClient) -> list:
 
 
 async def download_file(client: httpx.AsyncClient, filename: str) -> Optional[bytes]:
-    """Скачивает файл с Яндекс Диска по имени файла."""
     headers = {"Authorization": f"OAuth {YADISK_TOKEN}"}
     dl_resp = await client.get(
         "https://cloud-api.yandex.net/v1/disk/resources/download",
@@ -59,7 +59,6 @@ async def download_file(client: httpx.AsyncClient, filename: str) -> Optional[by
 
 
 async def get_photo_from_yadisk(date_str: str) -> Optional[tuple]:
-    """Ищет файл по дате. Возвращает (bytes, filename) или None."""
     async with httpx.AsyncClient() as client:
         items = await list_files_in_folder(client)
         for item in items:
@@ -73,7 +72,6 @@ async def get_photo_from_yadisk(date_str: str) -> Optional[tuple]:
 
 
 async def get_photos_by_month(month_str: str) -> list:
-    """Ищет все файлы за месяц (ММ-ГГ). Возвращает список (bytes, filename)."""
     results = []
     async with httpx.AsyncClient() as client:
         items = await list_files_in_folder(client)
@@ -89,7 +87,6 @@ async def get_photos_by_month(month_str: str) -> list:
 
 
 async def delete_photo_from_yadisk(filename: str) -> bool:
-    """Удаляет файл с Яндекс Диска. Возвращает True если успешно."""
     headers = {"Authorization": f"OAuth {YADISK_TOKEN}"}
     async with httpx.AsyncClient() as client:
         resp = await client.delete(
@@ -100,6 +97,31 @@ async def delete_photo_from_yadisk(filename: str) -> bool:
         return resp.status_code in (204, 202)
 
 
+async def upload_photo_to_yadisk(file_bytes: bytes, filename: str) -> bool:
+    """Загружает файл на Яндекс Диск."""
+    headers = {"Authorization": f"OAuth {YADISK_TOKEN}"}
+    async with httpx.AsyncClient() as client:
+        # Получаем URL для загрузки
+        resp = await client.get(
+            "https://cloud-api.yandex.net/v1/disk/resources/upload",
+            headers=headers,
+            params={"path": f"{YADISK_FOLDER}/{filename}", "overwrite": "true"},
+        )
+        if resp.status_code != 200:
+            logger.error(f"Upload URL error: {resp.text}")
+            return False
+        upload_url = resp.json().get("href")
+        if not upload_url:
+            return False
+        # Загружаем файл
+        upload_resp = await client.put(
+            upload_url,
+            content=file_bytes,
+            headers={"Content-Type": "image/jpeg"},
+        )
+        return upload_resp.status_code in (201, 200)
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -107,6 +129,7 @@ async def cmd_start(message: types.Message):
         "Доступные команды:\n"
         "📸 <b>08-06-26</b> — фото за конкретную дату\n"
         "📅 <b>06-26</b> — все фото за месяц (ММ-ГГ)\n"
+        "⬆️ <b>добавить 08-06-26</b> — загрузить фото на диск\n"
         "🗑 <b>удалить 08-06-26</b> — удалить фото по дате",
         parse_mode="HTML"
     )
@@ -114,15 +137,40 @@ async def cmd_start(message: types.Message):
 
 @dp.message()
 async def handle_message(message: types.Message):
-    if not message.text:
-        return
-
-    text = message.text.strip()
     user_id = message.from_user.id
+
+    # Ожидаем фото для загрузки
+    if user_id in pending_upload:
+        date_str = pending_upload[user_id]
+        if message.photo:
+            del pending_upload[user_id]
+            await message.answer("⏳ Загружаю на Яндекс Диск...")
+            # Берём фото в максимальном качестве
+            photo = message.photo[-1]
+            file = await bot.get_file(photo.file_id)
+            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(file_url)
+                file_bytes = resp.content
+            filename = f"{date_str}.jpg"
+            success = await upload_photo_to_yadisk(file_bytes, filename)
+            if success:
+                await message.answer(f"✅ Фото сохранено как <b>{filename}</b>", parse_mode="HTML")
+            else:
+                await message.answer("❌ Не удалось загрузить фото.")
+            return
+        elif message.text and message.text.strip().lower() in ("отмена", "cancel"):
+            del pending_upload[user_id]
+            await message.answer("Отменено.")
+            return
+        else:
+            await message.answer("Пришли фото или напиши <b>отмена</b>.", parse_mode="HTML")
+            return
 
     # Ожидаем подтверждение удаления
     if user_id in pending_delete:
         filename = pending_delete[user_id]
+        text = message.text.strip() if message.text else ""
         if text.lower() in ("да", "yes", "y", "д"):
             del pending_delete[user_id]
             await message.answer("⏳ Удаляю...")
@@ -130,7 +178,7 @@ async def handle_message(message: types.Message):
             if success:
                 await message.answer(f"✅ Фото <b>{filename}</b> удалено.", parse_mode="HTML")
             else:
-                await message.answer("❌ Не удалось удалить. Возможно токен не имеет права на запись.")
+                await message.answer("❌ Не удалось удалить.")
         elif text.lower() in ("нет", "no", "n", "н"):
             del pending_delete[user_id]
             await message.answer("Отменено.")
@@ -138,7 +186,23 @@ async def handle_message(message: types.Message):
             await message.answer("Ответь <b>да</b> или <b>нет</b>.", parse_mode="HTML")
         return
 
-    # Команда удаления
+    if not message.text:
+        return
+
+    text = message.text.strip()
+
+    # Команда добавить фото
+    add_match = re.search(r"добавить\s+(\d{2}-\d{2}-\d{2})", text, re.IGNORECASE)
+    if add_match:
+        date_str = add_match.group(1)
+        pending_upload[user_id] = date_str
+        await message.answer(
+            f"📎 Пришли фото для даты <b>{date_str}</b>\n\nИли напиши <b>отмена</b>.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Команда удалить фото
     delete_match = DELETE_PATTERN.search(text)
     if delete_match:
         date_str = delete_match.group(1)
@@ -179,15 +243,16 @@ async def handle_message(message: types.Message):
             return
         await message.answer(f"📅 Найдено фото: <b>{len(results)}</b>", parse_mode="HTML")
         for photo_bytes, filename in results:
-            date_str = filename.rsplit(".", 1)[0]
+            date_label = filename.rsplit(".", 1)[0]
             photo = BufferedInputFile(photo_bytes, filename=filename)
-            await message.answer_photo(photo, caption=f"📸 {date_str}")
+            await message.answer_photo(photo, caption=f"📸 {date_label}")
         return
 
     await message.answer(
         "Не понял запрос.\n\n"
         "📸 <b>08-06-26</b> — фото за дату\n"
         "📅 <b>06-26</b> — все фото за месяц\n"
+        "⬆️ <b>добавить 08-06-26</b> — загрузить фото\n"
         "🗑 <b>удалить 08-06-26</b> — удалить фото",
         parse_mode="HTML"
     )
