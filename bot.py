@@ -55,12 +55,17 @@ async def download_file(client: httpx.AsyncClient, filename: str) -> Optional[by
         headers=headers,
         params={"path": f"{YADISK_FOLDER}/{filename}"},
     )
+    logger.info(f"Download URL status: {dl_resp.status_code} for {filename}")
     if dl_resp.status_code != 200:
+        logger.error(f"Download URL error: {dl_resp.text}")
         return None
     download_url = dl_resp.json().get("href")
     if not download_url:
         return None
-    file_resp = await client.get(download_url, follow_redirects=True)
+    # Используем отдельный клиент без авторизации для прямого скачивания
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as dl_client:
+        file_resp = await dl_client.get(download_url)
+    logger.info(f"File download status: {file_resp.status_code}, size: {len(file_resp.content)}")
     return file_resp.content if file_resp.status_code == 200 else None
 
 
