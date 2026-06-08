@@ -139,6 +139,15 @@ async def cmd_debug(message: types.Message):
     await message.answer(f"📁 Файлы в папке:\n{names}\n\nПуть: {YADISK_FOLDER}")
 
 
+@dp.message(lambda m: m.text in ("/reset", "отмена", "Отмена"))
+async def cmd_reset(message: types.Message):
+    user_id = message.from_user.id
+    pending_date.pop(user_id, None)
+    pending_upload.pop(user_id, None)
+    pending_delete.pop(user_id, None)
+    await message.answer("🔄 Сброшено. Выбери действие:", reply_markup=MAIN_KEYBOARD)
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     await message.answer(
@@ -253,24 +262,36 @@ async def handle_message(message: types.Message):
             await message.answer(f"Удалить фото за <b>{date_str}</b>?", parse_mode="HTML", reply_markup=kb)
             return
 
-    # ── Кнопки главного меню ──
+    # ── Кнопки главного меню — всегда сбрасывают состояние ──
     if text == "📸 Найти фото по дате":
+        pending_date.pop(user_id, None)
+        pending_upload.pop(user_id, None)
+        pending_delete.pop(user_id, None)
         pending_date[user_id] = "search"
-        await message.answer("Напиши дату в формате <b>ДД-ММ-ГГ</b>\nНапример: <b>08-06-26</b>", parse_mode="HTML")
+        await message.answer("Напиши дату в формате <b>ДД-ММ-ГГ</b>\nНапример: <b>08-06-26</b>", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
         return
 
     if text == "📅 Все фото за месяц":
+        pending_date.pop(user_id, None)
+        pending_upload.pop(user_id, None)
+        pending_delete.pop(user_id, None)
         pending_date[user_id] = "month"
-        await message.answer("Напиши месяц в формате <b>ММ-ГГ</b>\nНапример: <b>06-26</b>", parse_mode="HTML")
+        await message.answer("Напиши месяц в формате <b>ММ-ГГ</b>\nНапример: <b>06-26</b>", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
         return
 
     if text == "⬆️ Загрузить фото":
-        await message.answer("📎 Пришли фото — я спрошу дату.")
+        pending_date.pop(user_id, None)
+        pending_upload.pop(user_id, None)
+        pending_delete.pop(user_id, None)
+        await message.answer("📎 Пришли фото — я спрошу дату.", reply_markup=MAIN_KEYBOARD)
         return
 
     if text == "🗑 Удалить фото":
+        pending_date.pop(user_id, None)
+        pending_upload.pop(user_id, None)
+        pending_delete.pop(user_id, None)
         pending_date[user_id] = "delete"
-        await message.answer("Напиши дату фото которое удалить <b>ДД-ММ-ГГ</b>\nНапример: <b>08-06-26</b>", parse_mode="HTML")
+        await message.answer("Напиши дату фото которое удалить <b>ДД-ММ-ГГ</b>\nНапример: <b>08-06-26</b>", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
         return
 
     # ── Пользователь прислал фото ──
