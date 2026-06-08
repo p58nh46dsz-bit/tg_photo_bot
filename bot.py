@@ -70,14 +70,21 @@ async def download_file(client: httpx.AsyncClient, filename: str) -> Optional[by
 
 
 async def get_photo_from_yadisk(date_str: str) -> Optional[tuple]:
-    async with httpx.AsyncClient() as client:
-        items = await list_files_in_folder(client)
-        for item in items:
-            name = item.get("name", "")
-            if name.rsplit(".", 1)[0] == date_str and item.get("type") == "file":
-                data = await download_file(client, name)
-                if data:
-                    return data, name
+    for attempt in range(3):  # 3 попытки
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                items = await list_files_in_folder(client)
+                for item in items:
+                    name = item.get("name", "")
+                    if name.rsplit(".", 1)[0] == date_str and item.get("type") == "file":
+                        data = await download_file(client, name)
+                        if data:
+                            return data, name
+            return None
+        except Exception as e:
+            logger.error(f"Attempt {attempt+1} failed: {e}")
+            if attempt < 2:
+                await asyncio.sleep(2)
     return None
 
 
