@@ -1,0 +1,13 @@
+services:
+  - type: worker
+    name: tg-photo-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: YADISK_TOKEN
+        sync: false
+      - key: YADISK_FOLDER
+        sync: false
