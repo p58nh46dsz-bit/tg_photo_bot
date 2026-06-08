@@ -129,7 +129,7 @@ async def cmd_start(message: types.Message):
         "Доступные команды:\n"
         "📸 <b>08-06-26</b> — фото за конкретную дату\n"
         "📅 <b>06-26</b> — все фото за месяц (ММ-ГГ)\n"
-        "⬆️ <b>добавить 08-06-26</b> — загрузить фото на диск\n"
+        "⬆️ Отправь фото — бот попросит дату\n"
         "🗑 <b>удалить 08-06-26</b> — удалить фото по дате",
         parse_mode="HTML"
     )
@@ -139,33 +139,44 @@ async def cmd_start(message: types.Message):
 async def handle_message(message: types.Message):
     user_id = message.from_user.id
 
-    # Ожидаем фото для загрузки
+    # Ожидаем дату для фото которое уже прислали
     if user_id in pending_upload:
-        date_str = pending_upload[user_id]
-        if message.photo:
-            del pending_upload[user_id]
-            await message.answer("⏳ Загружаю на Яндекс Диск...")
-            # Берём фото в максимальном качестве
-            photo = message.photo[-1]
-            file = await bot.get_file(photo.file_id)
-            file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(file_url)
-                file_bytes = resp.content
-            filename = f"{date_str}.jpg"
-            success = await upload_photo_to_yadisk(file_bytes, filename)
-            if success:
-                await message.answer(f"✅ Фото сохранено как <b>{filename}</b>", parse_mode="HTML")
+        if message.text:
+            text_input = message.text.strip()
+            if text_input.lower() in ("отмена", "cancel"):
+                del pending_upload[user_id]
+                await message.answer("Отменено.")
+                return
+            date_match_input = DATE_PATTERN.search(text_input)
+            if date_match_input:
+                date_str = date_match_input.group(1)
+                file_bytes = pending_upload[user_id]
+                del pending_upload[user_id]
+                await message.answer("⏳ Загружаю на Яндекс Диск...")
+                filename = f"{date_str}.jpg"
+                success = await upload_photo_to_yadisk(file_bytes, filename)
+                if success:
+                    await message.answer(f"✅ Фото сохранено как <b>{filename}</b>", parse_mode="HTML")
+                else:
+                    await message.answer("❌ Не удалось загрузить фото.")
             else:
-                await message.answer("❌ Не удалось загрузить фото.")
-            return
-        elif message.text and message.text.strip().lower() in ("отмена", "cancel"):
-            del pending_upload[user_id]
-            await message.answer("Отменено.")
+                await message.answer("Напиши дату в формате <b>ДД-ММ-ГГ</b>, например: <b>08-06-26</b>\n\nИли напиши <b>отмена</b>.", parse_mode="HTML")
             return
         else:
-            await message.answer("Пришли фото или напиши <b>отмена</b>.", parse_mode="HTML")
+            await message.answer("Напиши дату в формате <b>ДД-ММ-ГГ</b>, например: <b>08-06-26</b>\n\nИли напиши <b>отмена</b>.", parse_mode="HTML")
             return
+
+    # Пользователь прислал фото — спрашиваем дату
+    if message.photo:
+        photo = message.photo[-1]
+        file = await bot.get_file(photo.file_id)
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file.file_path}"
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(file_url)
+            file_bytes = resp.content
+        pending_upload[user_id] = file_bytes
+        await message.answer("📅 Напиши дату для этого фото в формате <b>ДД-ММ-ГГ</b>\nНапример: <b>08-06-26</b>", parse_mode="HTML")
+        return
 
     # Ожидаем подтверждение удаления
     if user_id in pending_delete:
@@ -190,17 +201,6 @@ async def handle_message(message: types.Message):
         return
 
     text = message.text.strip()
-
-    # Команда добавить фото
-    add_match = re.search(r"добавить\s+(\d{2}-\d{2}-\d{2})", text, re.IGNORECASE)
-    if add_match:
-        date_str = add_match.group(1)
-        pending_upload[user_id] = date_str
-        await message.answer(
-            f"📎 Пришли фото для даты <b>{date_str}</b>\n\nИли напиши <b>отмена</b>.",
-            parse_mode="HTML"
-        )
-        return
 
     # Команда удалить фото
     delete_match = DELETE_PATTERN.search(text)
@@ -252,7 +252,7 @@ async def handle_message(message: types.Message):
         "Не понял запрос.\n\n"
         "📸 <b>08-06-26</b> — фото за дату\n"
         "📅 <b>06-26</b> — все фото за месяц\n"
-        "⬆️ <b>добавить 08-06-26</b> — загрузить фото\n"
+        "⬆️ Отправь фото — бот попросит дату\n"
         "🗑 <b>удалить 08-06-26</b> — удалить фото",
         parse_mode="HTML"
     )
