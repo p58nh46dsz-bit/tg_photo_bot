@@ -63,23 +63,31 @@ async def download_file(client: httpx.AsyncClient, filename: str) -> Optional[by
     if not download_url:
         return None
     # Используем отдельный клиент без авторизации для прямого скачивания
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as dl_client:
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as dl_client:
         file_resp = await dl_client.get(download_url)
     logger.info(f"File download status: {file_resp.status_code}, size: {len(file_resp.content)}")
     return file_resp.content if file_resp.status_code == 200 else None
 
 
-async def get_photo_from_yadisk(date_str: str) -> Optional[tuple]:
-    for attempt in range(3):  # 3 попытки
+async def get_photo_url_from_yadisk(date_str: str) -> Optional[tuple]:
+    """Возвращает (download_url, filename) без скачивания файла."""
+    for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 items = await list_files_in_folder(client)
                 for item in items:
                     name = item.get("name", "")
                     if name.rsplit(".", 1)[0] == date_str and item.get("type") == "file":
-                        data = await download_file(client, name)
-                        if data:
-                            return data, name
+                        headers = {"Authorization": f"OAuth {YADISK_TOKEN}"}
+                        dl_resp = await client.get(
+                            "https://cloud-api.yandex.net/v1/disk/resources/download",
+                            headers=headers,
+                            params={"path": f"{YADISK_FOLDER}/{name}"},
+                        )
+                        if dl_resp.status_code == 200:
+                            url = dl_resp.json().get("href")
+                            if url:
+                                return url, name
             return None
         except Exception as e:
             logger.error(f"Attempt {attempt+1} failed: {e}")
@@ -88,15 +96,37 @@ async def get_photo_from_yadisk(date_str: str) -> Optional[tuple]:
     return None
 
 
+async def get_photo_from_yadisk(date_str: str) -> Optional[tuple]:
+    """Скачивает файл и возвращает (bytes, filename)."""
+    result = await get_photo_url_from_yadisk(date_str)
+    if not result:
+        return None
+    url, name = result
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
+        resp = await client.get(url)
+    if resp.status_code == 200:
+        return resp.content, name
+    return None
+
+
 async def get_photos_by_month(month_str: str) -> list:
+    """Возвращает список (url, filename) за месяц."""
     results = []
-    async with httpx.AsyncClient() as client:
+    headers = {"Authorization": f"OAuth {YADISK_TOKEN}"}
+    async with httpx.AsyncClient(timeout=30) as client:
         items = await list_files_in_folder(client)
         matched = [i for i in items if i.get("type") == "file" and f"-{month_str}" in i.get("name", "")]
         for item in matched:
-            data = await download_file(client, item["name"])
-            if data:
-                results.append((data, item["name"]))
+            name = item["name"]
+            dl_resp = await client.get(
+                "https://cloud-api.yandex.net/v1/disk/resources/download",
+                headers=headers,
+                params={"path": f"{YADISK_FOLDER}/{name}"},
+            )
+            if dl_resp.status_code == 200:
+                url = dl_resp.json().get("href")
+                if url:
+                    results.append((url, name))
     return results
 
 
@@ -214,13 +244,13 @@ async def handle_message(message: types.Message):
                 return
             del pending_date[user_id]
             date_str = date_match.group(1)
-            await message.answer(f"🔍 Ищу фото за {date_str}...", reply_markup=ReplyKeyboardRemove())
-            result = await get_photo_from_yadisk(date_str)
+            await message.answer(f"🔍 Ищу фото за {date_str}...")
+            result = await get_photo_url_from_yadisk(date_str)
             if result is None:
                 await message.answer(f"Фото за <b>{date_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
             else:
-                photo_bytes, filename = result
-                await message.answer_photo(BufferedInputFile(photo_bytes, filename=filename), caption=f"📸 {date_str}", reply_markup=MAIN_KEYBOARD)
+                url, filename = result
+                await message.answer_photo(url, caption=f"📸 {date_str}", reply_markup=MAIN_KEYBOARD)
             return
 
         if mode == "month":
@@ -236,9 +266,9 @@ async def handle_message(message: types.Message):
                 await message.answer(f"Фото за <b>{month_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
             else:
                 await message.answer(f"📅 Найдено: <b>{len(results)}</b> фото", parse_mode="HTML")
-                for photo_bytes, filename in results:
+                for url, filename in results:
                     label = filename.rsplit(".", 1)[0]
-                    await message.answer_photo(BufferedInputFile(photo_bytes, filename=filename), caption=f"📸 {label}")
+                    await message.answer_photo(url, caption=f"📸 {label}")
                 await message.answer("Готово!", reply_markup=MAIN_KEYBOARD)
             return
 
