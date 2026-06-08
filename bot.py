@@ -116,6 +116,17 @@ async def upload_photo_to_yadisk(file_bytes: bytes, filename: str) -> bool:
         return upload_resp.status_code in (201, 200)
 
 
+@dp.message(lambda m: m.text == "/debug")
+async def cmd_debug(message: types.Message):
+    async with httpx.AsyncClient() as client:
+        items = await list_files_in_folder(client)
+    if not items:
+        await message.answer("❌ Папка пустая или токен не работает")
+        return
+    names = "\n".join(i["name"] for i in items if i.get("type") == "file")
+    await message.answer(f"📁 Файлы в папке:\n{names}\n\nПуть: {YADISK_FOLDER}")
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     await message.answer(
