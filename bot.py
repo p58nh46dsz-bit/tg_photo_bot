@@ -232,82 +232,36 @@ async def handle_message(message: types.Message):
             await message.answer("Ответь <b>да</b> или <b>нет</b>.", parse_mode="HTML")
         return
 
-    # ── Ожидаем дату (после нажатия кнопки) ──
-    if user_id in pending_date:
-        mode = pending_date[user_id]
+    # ── Ожидаем дату удаления (после нажатия кнопки удалить) ──
+    if user_id in pending_date and pending_date[user_id] == "delete":
         if text.lower() in ("отмена", "cancel"):
             del pending_date[user_id]
             await message.answer("Отменено.", reply_markup=MAIN_KEYBOARD)
             return
-
-        if mode == "search":
-            date_match = DATE_PATTERN.search(text)
-            if not date_match:
-                await message.answer("Напиши дату в формате <b>ДД-ММ-ГГ</b>, например: <b>08-06-26</b>", parse_mode="HTML")
-                return
-            del pending_date[user_id]
-            date_str = date_match.group(1)
-            await message.answer(f"🔍 Ищу фото за {date_str}...")
-            result = await get_photo_from_yadisk(date_str)
-            if result is None:
-                # Диагностика: проверяем есть ли файл вообще
-                async with httpx.AsyncClient(timeout=15) as client:
-                    items = await list_files_in_folder(client)
-                found = [i["name"] for i in items if i.get("type") == "file" and i["name"].rsplit(".", 1)[0] == date_str]
-                if found:
-                    await message.answer(f"⚠️ Файл найден ({found[0]}) но не скачался. Попробуй ещё раз.", reply_markup=MAIN_KEYBOARD)
-                else:
-                    await message.answer(f"Фото за <b>{date_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
-            else:
-                photo_bytes, filename = result
-                await message.answer_photo(BufferedInputFile(photo_bytes, filename=filename), caption=f"📸 {date_str}", reply_markup=MAIN_KEYBOARD)
+        date_match = DATE_PATTERN.search(text)
+        if not date_match:
+            await message.answer("Напиши дату в формате <b>ДД-ММ-ГГ</b>, например: <b>08-06-26</b>", parse_mode="HTML")
             return
-
-        if mode == "month":
-            month_match = MONTH_PATTERN.match(text) or re.search(r"\b(\d{2}-\d{2})\b", text)
-            if not month_match:
-                await message.answer("Напиши месяц в формате <b>ММ-ГГ</b>, например: <b>06-26</b>", parse_mode="HTML")
-                return
-            del pending_date[user_id]
-            month_str = month_match.group(1)
-            await message.answer(f"🔍 Ищу все фото за {month_str}...", reply_markup=ReplyKeyboardRemove())
-            results = await get_photos_by_month(month_str)
-            if not results:
-                await message.answer(f"Фото за <b>{month_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
-            else:
-                await message.answer(f"📅 Найдено: <b>{len(results)}</b> фото", parse_mode="HTML")
-                for photo_bytes, filename in results:
-                    label = filename.rsplit(".", 1)[0]
-                    await message.answer_photo(BufferedInputFile(photo_bytes, filename=filename), caption=f"📸 {label}")
-                await message.answer("Готово!", reply_markup=MAIN_KEYBOARD)
+        del pending_date[user_id]
+        date_str = date_match.group(1)
+        result = await get_photo_from_yadisk(date_str)
+        if result is None:
+            await message.answer(f"Фото за <b>{date_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
             return
+        _, filename = result
+        pending_delete[user_id] = filename
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="да"), KeyboardButton(text="нет")]],
+            resize_keyboard=True
+        )
+        await message.answer(f"Удалить фото за <b>{date_str}</b>?", parse_mode="HTML", reply_markup=kb)
+        return
 
-        if mode == "delete":
-            date_match = DATE_PATTERN.search(text)
-            if not date_match:
-                await message.answer("Напиши дату в формате <b>ДД-ММ-ГГ</b>, например: <b>08-06-26</b>", parse_mode="HTML")
-                return
-            del pending_date[user_id]
-            date_str = date_match.group(1)
-            result = await get_photo_from_yadisk(date_str)
-            if result is None:
-                await message.answer(f"Фото за <b>{date_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
-                return
-            _, filename = result
-            pending_delete[user_id] = filename
-            kb = ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="да"), KeyboardButton(text="нет")]],
-                resize_keyboard=True
-            )
-            await message.answer(f"Удалить фото за <b>{date_str}</b>?", parse_mode="HTML", reply_markup=kb)
-            return
-
-    # ── Кнопки главного меню — всегда сбрасывают состояние ──
+    # ── Кнопки главного меню ──
     if text == "📸 Найти фото по дате":
         pending_date.pop(user_id, None)
         pending_upload.pop(user_id, None)
         pending_delete.pop(user_id, None)
-        pending_date[user_id] = "search"
         await message.answer("Напиши дату в формате <b>ДД-ММ-ГГ</b>\nНапример: <b>08-06-26</b>", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
         return
 
@@ -315,7 +269,6 @@ async def handle_message(message: types.Message):
         pending_date.pop(user_id, None)
         pending_upload.pop(user_id, None)
         pending_delete.pop(user_id, None)
-        pending_date[user_id] = "month"
         await message.answer("Напиши месяц в формате <b>ММ-ГГ</b>\nНапример: <b>06-26</b>", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
         return
 
@@ -346,7 +299,36 @@ async def handle_message(message: types.Message):
         await message.answer("📅 Напиши дату для этого фото <b>ДД-ММ-ГГ</b>\nНапример: <b>08-06-26</b>\n\nИли напиши <b>отмена</b>.", parse_mode="HTML")
         return
 
-    await message.answer("Выбери действие:", reply_markup=MAIN_KEYBOARD)
+    # ── Прямой поиск по дате ДД-ММ-ГГ ──
+    date_match = DATE_PATTERN.search(text)
+    if date_match:
+        date_str = date_match.group(1)
+        await message.answer(f"🔍 Ищу фото за {date_str}...")
+        result = await get_photo_from_yadisk(date_str)
+        if result is None:
+            await message.answer(f"Фото за <b>{date_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
+        else:
+            photo_bytes, filename = result
+            await message.answer_photo(BufferedInputFile(photo_bytes, filename=filename), caption=f"📸 {date_str}", reply_markup=MAIN_KEYBOARD)
+        return
+
+    # ── Прямой поиск по месяцу ММ-ГГ ──
+    month_match = MONTH_PATTERN.match(text)
+    if month_match:
+        month_str = month_match.group(1)
+        await message.answer(f"🔍 Ищу все фото за {month_str}...")
+        results = await get_photos_by_month(month_str)
+        if not results:
+            await message.answer(f"Фото за <b>{month_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
+        else:
+            await message.answer(f"📅 Найдено: <b>{len(results)}</b> фото", parse_mode="HTML")
+            for photo_bytes, filename in results:
+                label = filename.rsplit(".", 1)[0]
+                await message.answer_photo(BufferedInputFile(photo_bytes, filename=filename), caption=f"📸 {label}")
+            await message.answer("Готово!", reply_markup=MAIN_KEYBOARD)
+        return
+
+    await message.answer("Выбери действие 👇", reply_markup=MAIN_KEYBOARD)
 
 
 async def main():
