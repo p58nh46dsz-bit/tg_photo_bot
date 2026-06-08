@@ -250,7 +250,14 @@ async def handle_message(message: types.Message):
             await message.answer(f"🔍 Ищу фото за {date_str}...")
             result = await get_photo_from_yadisk(date_str)
             if result is None:
-                await message.answer(f"Фото за <b>{date_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
+                # Диагностика: проверяем есть ли файл вообще
+                async with httpx.AsyncClient(timeout=15) as client:
+                    items = await list_files_in_folder(client)
+                found = [i["name"] for i in items if i.get("type") == "file" and i["name"].rsplit(".", 1)[0] == date_str]
+                if found:
+                    await message.answer(f"⚠️ Файл найден ({found[0]}) но не скачался. Попробуй ещё раз.", reply_markup=MAIN_KEYBOARD)
+                else:
+                    await message.answer(f"Фото за <b>{date_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
             else:
                 photo_bytes, filename = result
                 await message.answer_photo(BufferedInputFile(photo_bytes, filename=filename), caption=f"📸 {date_str}", reply_markup=MAIN_KEYBOARD)
