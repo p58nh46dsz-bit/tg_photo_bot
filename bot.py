@@ -69,8 +69,8 @@ async def download_file(client: httpx.AsyncClient, filename: str) -> Optional[by
     return file_resp.content if file_resp.status_code == 200 else None
 
 
-async def get_photo_url_from_yadisk(date_str: str) -> Optional[tuple]:
-    """Возвращает (download_url, filename) без скачивания файла."""
+async def get_photo_from_yadisk(date_str: str) -> Optional[tuple]:
+    """Скачивает файл и возвращает (bytes, filename)."""
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -84,33 +84,31 @@ async def get_photo_url_from_yadisk(date_str: str) -> Optional[tuple]:
                             headers=headers,
                             params={"path": f"{YADISK_FOLDER}/{name}"},
                         )
-                        if dl_resp.status_code == 200:
-                            url = dl_resp.json().get("href")
-                            if url:
-                                return url, name
+                        if dl_resp.status_code != 200:
+                            continue
+                        url = dl_resp.json().get("href")
+                        if not url:
+                            continue
+                        # Скачиваем сразу пока ссылка свежая
+                        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as dl:
+                            file_resp = await dl.get(url)
+                        if file_resp.status_code == 200:
+                            return file_resp.content, name
             return None
         except Exception as e:
             logger.error(f"Attempt {attempt+1} failed: {e}")
             if attempt < 2:
-                await asyncio.sleep(2)
+                await asyncio.sleep(1)
     return None
 
 
-async def get_photo_from_yadisk(date_str: str) -> Optional[tuple]:
-    """Скачивает файл и возвращает (bytes, filename)."""
-    result = await get_photo_url_from_yadisk(date_str)
-    if not result:
-        return None
-    url, name = result
-    async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-        resp = await client.get(url)
-    if resp.status_code == 200:
-        return resp.content, name
-    return None
+async def get_photo_url_from_yadisk(date_str: str) -> Optional[tuple]:
+    result = await get_photo_from_yadisk(date_str)
+    return result
 
 
 async def get_photos_by_month(month_str: str) -> list:
-    """Возвращает список (url, filename) за месяц."""
+    """Возвращает список (bytes, filename) за месяц."""
     results = []
     headers = {"Authorization": f"OAuth {YADISK_TOKEN}"}
     async with httpx.AsyncClient(timeout=30) as client:
@@ -123,10 +121,15 @@ async def get_photos_by_month(month_str: str) -> list:
                 headers=headers,
                 params={"path": f"{YADISK_FOLDER}/{name}"},
             )
-            if dl_resp.status_code == 200:
-                url = dl_resp.json().get("href")
-                if url:
-                    results.append((url, name))
+            if dl_resp.status_code != 200:
+                continue
+            url = dl_resp.json().get("href")
+            if not url:
+                continue
+            async with httpx.AsyncClient(timeout=120, follow_redirects=True) as dl:
+                file_resp = await dl.get(url)
+            if file_resp.status_code == 200:
+                results.append((file_resp.content, name))
     return results
 
 
@@ -245,12 +248,12 @@ async def handle_message(message: types.Message):
             del pending_date[user_id]
             date_str = date_match.group(1)
             await message.answer(f"🔍 Ищу фото за {date_str}...")
-            result = await get_photo_url_from_yadisk(date_str)
+            result = await get_photo_from_yadisk(date_str)
             if result is None:
                 await message.answer(f"Фото за <b>{date_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
             else:
-                url, filename = result
-                await message.answer_photo(url, caption=f"📸 {date_str}", reply_markup=MAIN_KEYBOARD)
+                photo_bytes, filename = result
+                await message.answer_photo(BufferedInputFile(photo_bytes, filename=filename), caption=f"📸 {date_str}", reply_markup=MAIN_KEYBOARD)
             return
 
         if mode == "month":
@@ -266,9 +269,9 @@ async def handle_message(message: types.Message):
                 await message.answer(f"Фото за <b>{month_str}</b> не найдено.", parse_mode="HTML", reply_markup=MAIN_KEYBOARD)
             else:
                 await message.answer(f"📅 Найдено: <b>{len(results)}</b> фото", parse_mode="HTML")
-                for url, filename in results:
+                for photo_bytes, filename in results:
                     label = filename.rsplit(".", 1)[0]
-                    await message.answer_photo(url, caption=f"📸 {label}")
+                    await message.answer_photo(BufferedInputFile(photo_bytes, filename=filename), caption=f"📸 {label}")
                 await message.answer("Готово!", reply_markup=MAIN_KEYBOARD)
             return
 
